@@ -1,16 +1,6 @@
 runtime: python311
 
 entrypoint: gunicorn -w 2 -k uvicorn.workers.UvicornWorker main:app
-# IGNoRAR
-# # ── Clase de instancia ────────────────────────────────────────────────────────
-# # F1 es la capa gratuita (256 MB de RAM). Usa F2/F4 si necesitas más recursos.
-# instance_class: F2
-
-# # ── Escalado automático ───────────────────────────────────────────────────────
-# automatic_scaling:
-#   min_instances: 0
-#   max_instances: 3
-#   target_cpu_utilization: 0.65
 
 # ── Conexión a Cloud SQL ──────────────────────────────────────────────────────
 # Agrega aquí el nombre de conexión de tu instancia Cloud SQL.
@@ -28,11 +18,11 @@ env_variables:
   # Formato: /cloudsql/<PROYECTO>:<REGION>:<INSTANCIA>
   DB_HOST:     "/cloudsql/cloud-store-lab:us-central1:instancia-productos"
   DB_PORT:     "5432"
-  DB_NAME:     "cloud_store_lab"
-  DB_USER:     "postgres"
-  DB_PASSWORD: "your_password"
+  DB_NAME:     "productos_db"
+  DB_USER:     "usuario_app"
+  DB_PASSWORD: ""
 
   # Google Cloud
-  GOOGLE_CLOUD_PROJECT:              "cloud_store_lab"
-  GCS_BUCKET_NAME:                   "REEMPLAZAR_NOMBRE_BUCKET"
-  FIRESTORE_COLLECTION_AUDIT_EVENTS: "eventos_auditoria"
+  GOOGLE_CLOUD_PROJECT:              "cloud-store-lab"
+  GCS_BUCKET_NAME:                   "cloud-store-lab-imagenes-productos"
+  FIRESTORE_COLLECTION_AUDIT_EVENTS: "productos-db"

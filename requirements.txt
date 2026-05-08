@@ -4,5 +4,8 @@ gunicorn
 psycopg2-binary
 google-cloud-storage
 google-cloud-firestore
+google-cloud-datastore
 python-dotenv
+google-cloud-secret-manager
 pydantic
+python-multipart

@@ -1,6 +1,6 @@
 """
 Aplicación FastAPI para evaluación de computación en la nube.
-Integra: Cloud SQL (PostgreSQL), Cloud Storage, Firestore, App Engine.
+Integra: Cloud SQL (PostgreSQL), Cloud Storage, Datastore, App Engine.
 """
 
 import os
@@ -12,7 +12,7 @@ import psycopg2
 import psycopg2.extras
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel
-from google.cloud import storage, firestore
+from google.cloud import storage, datastore
 from google.cloud.exceptions import GoogleCloudError
 
 # ── Registro de eventos ───────────────────────────────────────────────────────
@@ -88,33 +88,37 @@ def obtener_cliente_gcs() -> storage.Client:
 
 
 def subir_a_gcs(contenido: bytes, nombre_objeto: str, tipo_contenido: str) -> str:
-    """Sube bytes a Cloud Storage y retorna la URL pública del objeto."""
+    """
+    Sube bytes a Cloud Storage y retorna la URL pública del objeto.
+    Compatible con buckets que tienen 'uniform bucket-level access' activado.
+    El acceso público se gestiona a nivel de bucket (allUsers:objectViewer).
+    """
     cliente = obtener_cliente_gcs()
     bucket  = cliente.bucket(NOMBRE_BUCKET)
     blob    = bucket.blob(nombre_objeto)
     blob.upload_from_string(contenido, content_type=tipo_contenido)
-    blob.make_public()
-    return blob.public_url
+    return f"https://storage.googleapis.com/{NOMBRE_BUCKET}/{nombre_objeto}"
 
 
-# ── Helpers de Firestore ──────────────────────────────────────────────────────
+# ── Helpers de Datastore ──────────────────────────────────────────────────────
 
-def obtener_cliente_firestore() -> firestore.Client:
-    return firestore.Client(project=PROYECTO_GCP)
+def obtener_cliente_datastore() -> datastore.Client:
+    return datastore.Client(project=PROYECTO_GCP)
 
 
 def registrar_evento_auditoria(tipo_evento: str, detalles: dict):
-    """Escribe un documento de auditoría en Firestore."""
+    """Escribe un documento de auditoría en Datastore."""
     try:
-        db        = obtener_cliente_firestore()
-        coleccion = db.collection(COLECCION_AUDITORIA)
-        coleccion.add({
-            "tipo_evento":   tipo_evento,
-            "detalles":      detalles,
-            "marca_tiempo":  datetime.now(timezone.utc),
+        cliente = obtener_cliente_datastore()
+        entidad = datastore.Entity(cliente.key(COLECCION_AUDITORIA))
+        entidad.update({
+            "tipo_evento":  tipo_evento,
+            "detalles":     str(detalles),
+            "marca_tiempo": datetime.now(timezone.utc),
         })
+        cliente.put(entidad)
     except Exception as exc:
-        logger.error("Error al escribir evento de auditoría en Firestore: %s", exc)
+        logger.error("Error al escribir evento de auditoría: %s", exc)
 
 
 # ── Modelos Pydantic ──────────────────────────────────────────────────────────
@@ -136,7 +140,7 @@ class CrearComentario(BaseModel):
 def verificar_salud():
     """
     Health check — verifica la conectividad con Cloud SQL,
-    Cloud Storage y Firestore.
+    Cloud Storage y Datastore.
     """
     estado: dict = {"estado": "ok", "entorno": ENTORNO, "servicios": {}}
 
@@ -158,13 +162,14 @@ def verificar_salud():
         estado["servicios"]["cloud_storage"] = f"error: {exc}"
         estado["estado"] = "degradado"
 
-    # Firestore
+    # Datastore
     try:
-        db = obtener_cliente_firestore()
-        db.collection(COLECCION_AUDITORIA).limit(1).get()
-        estado["servicios"]["firestore"] = "ok"
+        cliente = obtener_cliente_datastore()
+        consulta = cliente.query(kind=COLECCION_AUDITORIA)
+        list(consulta.fetch(limit=1))
+        estado["servicios"]["datastore"] = "ok"
     except Exception as exc:
-        estado["servicios"]["firestore"] = f"error: {exc}"
+        estado["servicios"]["datastore"] = f"error: {exc}"
         estado["estado"] = "degradado"
 
     return estado
@@ -268,7 +273,7 @@ def subir_imagen_producto(id_producto: int, archivo: UploadFile = File(...)):
 
 @app.post("/products/{id_producto}/comments", status_code=201)
 def agregar_comentario(id_producto: int, datos: CrearComentario):
-    """Escribe un comentario en Firestore y registra el evento en auditoría."""
+    """Escribe un comentario en Datastore y registra el evento en auditoría."""
 
     # Verificar que el producto existe en Cloud SQL
     try:
@@ -282,48 +287,46 @@ def agregar_comentario(id_producto: int, datos: CrearComentario):
     except psycopg2.Error as exc:
         raise HTTPException(status_code=500, detail=f"Error en la base de datos: {exc}") from exc
 
-    # Guardar comentario en Firestore
+    # Guardar comentario en Datastore
     try:
-        db              = obtener_cliente_firestore()
-        col_comentarios = db.collection("comentarios_productos")
-        ref_doc, _      = col_comentarios.add({
+        cliente = obtener_cliente_datastore()
+        entidad = datastore.Entity(cliente.key("comentarios_productos"))
+        entidad.update({
             "id_producto": id_producto,
             "autor":       datos.autor,
             "texto":       datos.texto,
             "creado_en":   datetime.now(timezone.utc),
         })
+        cliente.put(entidad)
+        id_comentario = entidad.key.id
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Error en Firestore: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"Error en Datastore: {exc}") from exc
 
     registrar_evento_auditoria(
         "comentario_agregado",
         {"id_producto": id_producto, "autor": datos.autor}
     )
-    return {"id_comentario": ref_doc.id, "id_producto": id_producto}
+    return {"id_comentario": id_comentario, "id_producto": id_producto}
 
 
 @app.get("/audit/events")
 def obtener_eventos_auditoria(limite: int = 50):
     """
-    Retorna los eventos de auditoría almacenados en Firestore,
+    Retorna los eventos de auditoría almacenados en Datastore,
     ordenados por marca de tiempo de forma descendente.
     """
     try:
-        db       = obtener_cliente_firestore()
-        consulta = (
-            db.collection(COLECCION_AUDITORIA)
-              .order_by("marca_tiempo", direction=firestore.Query.DESCENDING)
-              .limit(limite)
-        )
-        documentos = consulta.stream()
-        eventos = []
-        for doc in documentos:
-            datos = doc.to_dict()
-            datos["id"] = doc.id
+        cliente  = obtener_cliente_datastore()
+        consulta = cliente.query(kind=COLECCION_AUDITORIA)
+        consulta.order = ["-marca_tiempo"]
+        eventos  = []
+        for entidad in consulta.fetch(limit=limite):
+            datos        = dict(entidad)
+            datos["id"]  = entidad.key.id
             if "marca_tiempo" in datos and hasattr(datos["marca_tiempo"], "isoformat"):
                 datos["marca_tiempo"] = datos["marca_tiempo"].isoformat()
             eventos.append(datos)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Error en Firestore: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"Error en Datastore: {exc}") from exc
 
     return {"eventos": eventos, "total": len(eventos)}
