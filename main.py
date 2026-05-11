@@ -14,6 +14,8 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from google.cloud import storage, datastore
 from google.cloud.exceptions import GoogleCloudError
+from dotenv import load_dotenv
+load_dotenv()
 
 # ── Registro de eventos ───────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
